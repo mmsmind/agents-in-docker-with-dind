@@ -127,8 +127,8 @@ A successful push to `main` publishes `ghcr.io/sigmalko/agents-in-docker-with-di
 To create a new release after verifying `main`:
 
 ```bash
-git tag v1.0.1
-git push origin v1.0.1
+git tag v1.2.3
+git push origin v1.2.3
 ```
 
 Choose an unused version for subsequent releases. The release job runs only after tests and image publication succeed. Jobs use the built-in `GITHUB_TOKEN` with the permissions each job needs.

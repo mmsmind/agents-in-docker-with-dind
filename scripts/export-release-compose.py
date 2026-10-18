@@ -1,7 +1,5 @@
 #!/usr/bin/env python3
 """Export a standalone Compose file from the pinned upstream and DinD overlay."""
-import json
-import subprocess
 import sys
 from pathlib import Path
 
@@ -9,26 +7,36 @@ import yaml
 
 root = Path(__file__).resolve().parent.parent
 output = Path(sys.argv[1])
-result = subprocess.run(
-    [str(root / "compose"), "config", "--no-interpolate", "--no-path-resolution",
-     "--no-env-resolution", "--format", "json"],
-    cwd=root, check=True, capture_output=True, text=True,
-)
-config = json.loads(result.stdout)
-# These names are computed from the build checkout, not the deployment directory.
-config.pop("name", None)
-for collection in ("networks", "volumes"):
-    for definition in config.get(collection, {}).values():
-        definition.pop("name", None)
-# The release distributes a published image, not a local Dockerfile/build context.
-agent = config["services"]["agent"]
-agent.pop("build", None)
-# With interpolation disabled, Compose cannot infer that this variable is a host
-# path and represents it as a named volume. Preserve the upstream bind semantics.
-ssh_mounts = [v for v in agent["volumes"] if v.get("target") == "/home/agent/.ssh/authorized_keys"]
-if len(ssh_mounts) != 1 or "SSH_AUTHORIZED_KEYS" not in ssh_mounts[0].get("source", ""):
-    raise SystemExit("Unexpected upstream SSH authorized_keys mount")
-ssh_mounts[0]["type"] = "bind"
-ssh_mounts[0].pop("volume", None)
-ssh_mounts[0]["bind"] = {"create_host_path": True}
-output.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+base_path = root / "upstream/docker-compose.yml"
+overlay_path = root / "compose.dind.yml"
+base = yaml.safe_load(base_path.read_text(encoding="utf-8"))
+overlay = yaml.safe_load(overlay_path.read_text(encoding="utf-8"))
+
+# Fail rather than silently exporting an incomplete configuration if the source
+# files start depending on additional local files or new overlay merge rules.
+for source, document in ((base_path, base), (overlay_path, overlay)):
+    if any("env_file" in service for service in document.get("services", {}).values()):
+        raise SystemExit(f"Service env_file is not supported in release export: {source}")
+if set(overlay) != {"services", "volumes"} or set(overlay["services"]) != {"agent", "dind"}:
+    raise SystemExit("Unexpected DinD overlay structure; update the release exporter")
+agent_overlay = overlay["services"]["agent"]
+if set(agent_overlay) != {"image", "build", "depends_on", "volumes"}:
+    raise SystemExit("Unexpected agent overlay fields; update the release exporter")
+if "agent" not in base["services"] or "dind" in base["services"]:
+    raise SystemExit("Unexpected upstream services; update the release exporter")
+
+agent = base["services"]["agent"]
+if "depends_on" in agent:
+    raise SystemExit("Upstream agent has dependencies; update the release exporter")
+agent.pop("build", None)  # Release users pull the published image.
+agent["image"] = agent_overlay["image"]
+agent["depends_on"] = agent_overlay["depends_on"]
+agent.setdefault("volumes", []).extend(agent_overlay["volumes"])
+base["services"]["dind"] = overlay["services"]["dind"]
+for name, definition in overlay["volumes"].items():
+    volumes = base.setdefault("volumes", {})
+    if name in volumes and volumes[name] != definition:
+        raise SystemExit(f"Conflicting upstream volume: {name}")
+    volumes[name] = definition
+
+output.write_text(yaml.safe_dump(base, sort_keys=False), encoding="utf-8")

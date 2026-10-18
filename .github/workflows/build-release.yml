@@ -39,6 +39,7 @@ jobs:
           python-version: '3.12'
       - name: Test standalone release configuration
         run: |
+          docker compose version
           python -m pip install PyYAML==6.0.3
           python scripts/export-release-compose.py "$RUNNER_TEMP/docker-compose.yml"
           DIND_SMOKE_RELEASE_FILE="$RUNNER_TEMP/docker-compose.yml" tests/smoke.sh
