@@ -1,57 +1,71 @@
 # agents-in-docker-with-dind
 
-Rozszerzenie [agents-in-docker](https://github.com/sigmalko/agents-in-docker): środowisko agenta z dostępem przez SSH, Docker CLI i Docker Compose oraz własnym demonem Docker-in-Docker (DinD). Agent może sam uruchamiać kontenery, np. Redis lub serwery MCP, i budować obrazy. Bazowe repozytorium nadal odpowiada za obraz agenta, jego narzędzia, SSH i większość konfiguracji Compose.
+Run coding agents over SSH with their own Docker daemon. This project extends [agents-in-docker](https://github.com/sigmalko/agents-in-docker) with Docker CLI, Docker Compose, and Docker-in-Docker (DinD). Agents can build images and start their own services, such as Redis or containerized MCP servers.
 
-## Jak to działa
+## Architecture and security
 
 ```text
 Host Docker
-├── agent (SSH, Codex, Claude, Docker CLI i Compose)
-└── dind (osobny dockerd)
-    └── własne obrazy, sieci, wolumeny i kontenery (np. Redis, MCP)
+├── agent (SSH, Codex, Claude, Docker CLI and Compose)
+└── dind (a separate Docker daemon)
+    └── its own images, networks, volumes and containers (e.g. Redis, MCP)
 
-agent:/var/run/docker.sock ── socket Unix ──> dockerd w dind
-agent:/workspaces <──────── współdzielony wolumen ────────> dind:/workspaces
+agent:/var/run/docker.sock ── private Unix socket ──> dockerd in dind
+agent:/workspaces <──────── shared volume ────────> dind:/workspaces
 ```
 
-Compose uruchamia agenta i uprzywilejowany kontener `dind`. Agent łączy się z demonem DinD przez prywatny, współdzielony socket Unix; socket hosta nie jest montowany. Hostowy `docker ps` pokazuje kontenery `agent` i `dind`, ale nie kontenery utworzone przez wewnętrzny demon. `docker ps` u agenta pokazuje kontenery wewnętrzne, a nie kontenery hosta. To rozdzielenie list i zasobów demonów, **nie granica bezpieczeństwa ani izolacja procesów przed administratorem hosta**. Kontenery korzystają ze wspólnego jądra, a `privileged` znacznie osłabia izolację: używaj tylko zaufanych agentów i kodu, najlepiej na osobnej maszynie lub VM. Dostęp do socketu DinD daje pełną kontrolę nad tym demonem.
+The host Docker socket is not mounted. Host `docker ps` shows the outer agent and DinD containers, but not containers created by the inner daemon. `docker ps` inside the agent shows the inner containers, not the host's containers.
 
-Demon nie nasłuchuje na porcie TCP API. `/workspaces` jest współdzielony z demonem, aby wewnętrzne bind mounty mogły odwoływać się do tych samych ścieżek. Docker CLI i Compose są dodawane do obrazu bazowego; demon działa w kontenerze `dind`, nie w kontenerze agenta.
+**This separates Docker resources; it is not a strong security boundary.** DinD runs with `privileged`, shares the host kernel, and can potentially compromise the host. A host administrator can access its processes and data. Use trusted agents and code; use a dedicated VM or another stronger isolation boundary for untrusted workloads. Access to the DinD socket grants full control over that inner daemon. The daemon does not expose its API over TCP.
 
-## Wymagania i uruchomienie
+## Install from a release
 
-Wymagane są Git, Docker Engine z obsługą kontenerów uprzywilejowanych i wtyczka Docker Compose v2 na hoście Linux oraz klucz SSH. Zagnieżdżony Docker wymaga odpowiedniej obsługi cgroups, sieci i systemu plików przez hosta. W kontenerach VPS i środowiskach z ograniczeniami uprawnień może nie działać. Obraz upstream musi być dostępny z GHCR.
+Requirements: Linux with Docker Engine, the Docker Compose v2 plugin and support for privileged containers; an SSH key pair; access to the GHCR image; and sufficient disk space for nested images. Restricted VPS containers and runtimes may not support the required cgroups, networking or filesystems.
+
+On the Docker host, download the two release assets:
 
 ```bash
-git clone --recurse-submodules https://github.com/sigmalko/agents-in-docker-with-dind.git
-cd agents-in-docker-with-dind
+mkdir -p ~/agents-in-docker-with-dind/.ssh
+cd ~/agents-in-docker-with-dind
+curl -fsSLO https://github.com/sigmalko/agents-in-docker-with-dind/releases/latest/download/docker-compose.yml
+curl -fsSL https://github.com/sigmalko/agents-in-docker-with-dind/releases/latest/download/env.example -o .env.example
 cp .env.example .env
-mkdir -p .ssh
-# Skopiuj publiczny klucz SSH z komputera klienta do .ssh/authorized_keys.
+```
+
+Copy your SSH **public** key into `.ssh/authorized_keys` on the host and restrict its permissions:
+
+```bash
 chmod 600 .ssh/authorized_keys
-# Uzupełnij .env, w szczególności GH_TOKEN i AGENT_REPOSITORY.
-./compose up -d
-./compose ps
 ```
 
-Jeśli repozytorium zostało sklonowane bez `--recurse-submodules`, wykonaj `git submodule update --init --recursive`. Klucz prywatny pozostaje na komputerze klienta. Zmień porty w `.env`, jeśli są zajęte, następnie połącz się z komputera klienta:
+Keep the corresponding private key on your client computer. Edit `.env`, especially `GH_TOKEN` and `AGENT_REPOSITORY`, and change any occupied ports. Keep `.env` and private keys out of Git. Start the environment:
 
 ```bash
-ssh -i ~/.ssh/agents-in-docker -p 2222 agent@ADRES_HOSTA
+docker compose pull
+docker compose up -d
+docker compose ps
 ```
 
-`SSH_PORT` i `SERVICE_PORT` domyślnie wystawiają porty `2222` i `7777` na wszystkich interfejsach hosta, jak w repozytorium bazowym. Skonfiguruj firewall i dostęp do SSH stosownie do potrzeb. `.env` nie jest wersjonowany; nie umieszczaj w repozytorium tokenów ani kluczy prywatnych. Dalsze informacje o agentach i zmiennych środowiskowych znajdują się w [README repozytorium bazowego](https://github.com/sigmalko/agents-in-docker#readme).
-
-`./compose` przekazuje argumenty do hostowego Docker Compose, łącząc przypięty plik bazowy z `compose.dind.yml` i ustawiając katalog projektu tak, by `.env` i ścieżka do kluczy były rozwiązywane w tym repozytorium. Przykłady: `./compose logs dind`, `./compose restart`, `./compose down`. `DIND_IMAGE` wybiera publikowany obraz agenta z Docker CLI (domyślnie `latest`); `IMAGE` wybiera obraz bazowy wyłącznie przy lokalnej budowie. Aby zbudować lokalnie, użyj `./compose up -d --build`; aby pobrać nowszy opublikowany obraz, `./compose pull` i `./compose up -d`.
-
-GHCR może początkowo oznaczyć nowy pakiet jako prywatny. W takim przypadku administrator może zmienić widoczność pakietu w jego ustawieniach lub użytkownik może zalogować się do GHCR tokenem z uprawnieniem `read:packages` i dostępem do pakietu. Alternatywnie obraz można zbudować lokalnie poleceniem powyżej.
-
-## Weryfikacja i przykład Redis
-
-Na hoście `docker ps` pokazuje zewnętrzne kontenery. Po połączeniu przez SSH jako `agent`:
+Connect from the client computer:
 
 ```bash
-docker version                 # Server to demon DinD
+ssh -i ~/.ssh/agents-in-docker -p 2222 agent@HOST_ADDRESS
+```
+
+The release includes a standalone Compose file generated from the pinned upstream configuration and this project's overlay. The environment template points to the matching versioned agent image. GitHub sanitizes leading dots in release asset names, so the template is uploaded as `env.example` and downloaded as `.env.example`.
+
+`SSH_PORT` and `SERVICE_PORT` publish ports `2222` and `7777` on all host IPv4 interfaces by default, as in the upstream project. Configure your firewall and SSH access accordingly. `DIND_SERVICE_PORT` publishes the DinD service port on host loopback only. See the [upstream README](https://github.com/sigmalko/agents-in-docker#readme) for details on the agent environment and credentials.
+
+A newly published GHCR package may be private. If the image cannot be pulled anonymously, an administrator can change its visibility in package settings, or an authorized user can log in to GHCR with a token that has `read:packages` and access to the package. A public package can be pulled anonymously. Alternatively, build the image locally as described below.
+
+The image installs this project's English-language instructions in the agent's `~/.codex/AGENTS.md` and `~/.claude/CLAUDE.md`, so both CLIs receive the same default guidance across workspaces. The instructions are guidance, not an enforcement mechanism; an explicit user request can override them. These files are part of the agent image and are recreated with the container.
+
+## Verify Docker and run Redis
+
+On the host, `docker ps` lists the outer containers. After connecting over SSH as `agent`:
+
+```bash
+docker version                 # Server is the DinD daemon
 docker compose version
 mkdir -p /workspaces/redis-demo
 cd /workspaces/redis-demo
@@ -64,42 +78,59 @@ services:
 YAML
 docker compose up -d
 docker compose exec redis redis-cli ping  # PONG
-docker ps                                  # wewnętrzny Redis
+docker ps                                  # lists the inner Redis container
 ```
 
-Z agenta dostęp do opublikowanego portu wewnętrznego jest pod adresem `dind:7778`, np. `node -e 'const s=require("net").connect(7778,"dind",()=>s.write("*1\r\n$4\r\nPING\r\n")); s.on("data",b=>{console.log(b.toString());s.end()})'`. Porty kontenerów wewnętrznych są publikowane w przestrzeni sieciowej `dind`, nie agenta ani bezpośrednio hosta. Zewnętrzne Compose mapuje `127.0.0.1:${DIND_SERVICE_PORT:-7778}` hosta na port `7778` kontenera `dind`; na hoście Redis jest więc domyślnie osiągalny tylko pod `127.0.0.1:7778`. Wewnętrzne mapowanie powinno nasłuchiwać na `0.0.0.0` w `dind`, jak w przykładzie. Inne porty wymagają dodatkowego mapowania w `compose.dind.yml`; sam `docker run -p` wewnątrz nie otwiera ich na hoście. Dla usług dostępnych wyłącznie agentowi nie trzeba dodawać mapowania hosta; w razie potrzeby dostosuj lub usuń domyślne mapowanie.
-
-Wewnętrzne bind mounty są rozwiązywane przez demon `dind`, nie przez klienta Docker. Używaj ścieżek w `/workspaces`, które są dostępne pod tą samą nazwą w obu kontenerach. Przykładowo, po utworzeniu `/workspaces/data` przez agenta `docker run --rm -v /workspaces/data:/data alpine ls /data` widzi ten katalog. Inne ścieżki z kontenera agenta nie są automatycznie dostępne dla demona. Kontekst `docker build` jest przesyłany demonowi przez klienta.
-
-Serwer MCP obsługujący stdio można uruchomić jako proces `docker run --rm -i ...` w konfiguracji klienta MCP. Dla MCP przez HTTP uruchom kontener wewnętrzny z portem i skonfiguruj klienta na `http://dind:PORT`; dobór obrazu, argumentów i autoryzacji zależy od serwera. Serwisy w tej samej wewnętrznej sieci Compose mogą również komunikować się po nazwach usług.
-
-Po przykładzie: `docker compose down` w `/workspaces/redis-demo`.
-
-## Dane, aktualizacja i sprzątanie
-
-Wolumeny hostowego Compose przechowują `/workspaces`, dane demona `dind` i klucze hosta SSH; przetrwają `./compose down` oraz odtworzenie kontenerów. To zmiana względem nietrwałego `/workspaces` w projekcie bazowym. Kontenery, obrazy, cache i wolumeny wewnętrzne zajmują miejsce na dysku hosta. Konfiguracja CLI i loginy w pozostałej części systemu plików agenta pozostają nietrwałe po jego odtworzeniu. `./compose down -v` **usuwa** te wolumeny, w tym workspace, kontenery i dane DinD oraz klucze hosta SSH; przed wykonaniem zapisz potrzebne dane.
-
-## Zależność od agents-in-docker
-
-`upstream/` to [submoduł Git](https://git-scm.com/docs/gitsubmodules), przypięty do konkretnego commitu repozytorium bazowego. Dzięki temu plik Compose upstream jest używany bez kopiowania i aktualizowany świadomie, a GitHub pokazuje link do repozytorium oraz konkretną wersję. Obraz bazowy jest odrębną zależnością: domyślne `IMAGE` wskazuje tag odpowiadający temu samemu commitowi upstream. Po aktualizacji submodułu należy świadomie sprawdzić i zaktualizować również ten tag w `.env.example`, Dockerfile i `compose.dind.yml`. Wdrożenia mogą przypiąć opublikowany `DIND_IMAGE` do konkretnej wersji lub digestu.
-
-Aby zaktualizować zależność konfiguracji, wykonaj `git submodule update --remote upstream`, przejrzyj zmianę commitu, sprawdź zgodność z wybranym obrazem i uruchom środowisko ponownie; następnie zatwierdź nowy wskaźnik submodułu. `compose.dind.yml` nakłada tylko zmiany potrzebne dla DinD. Przy aktualizacjach sprawdź zwłaszcza nazwę usługi `agent`, UID/GID konta `agent` (1000), ścieżkę `/workspaces`, ustawienia SSH oraz zgodność GID socketu `2375` z obrazem `docker:29-dind`. Wykres zależności GitHub dotyczy obsługiwanych manifestów i zgłoszeń przez API; sam submoduł lub wpis w README nie gwarantuje pojawienia się w dependency graph ([dokumentacja GitHub](https://docs.github.com/en/code-security/concepts/supply-chain-security/dependency-graph)).
-
-## Ograniczenia
-
-DinD wymaga zasobów na drugi demon i jego obrazy, może działać wolniej oraz wymaga ostrożności przy portach, uprawnieniach i bind mountach. Usługi współdzielą jądro hosta; host ma dostęp do procesów, danych i sieci, a uprzywilejowany DinD nie nadaje się do uruchamiania niezaufanego kodu jako zabezpieczenie hosta. W przypadku niezaufanych zadań rozważ osobne VM lub inne silniejsze granice izolacji. Więcej: [Docker Engine security](https://docs.docker.com/engine/security/) i [oficjalny obraz Docker](https://hub.docker.com/_/docker).
-
-## GitHub Actions i wydania
-
-Workflow [.github/workflows/build-release.yml](.github/workflows/build-release.yml) testuje środowisko na pull requestach, pushach na `main` i tagach `v*`. Test uruchamia rzeczywisty DinD, sprawdza SSH, Compose, Redis, bind mount i rozdzielenie list kontenerów. Po teście push na `main` publikuje obraz `ghcr.io/sigmalko/agents-in-docker-with-dind:latest` i tag commitu `sha-...` dla `linux/amd64` i `linux/arm64`. Test funkcjonalny wykonywany jest na runnerze amd64; arm64 jest budowane przez emulację.
-
-Push taga wydania `vMAJOR.MINOR.PATCH` wskazującego commit na `main` publikuje obraz z tagiem bez `v` i tworzy GitHub Release z paczką `agents-in-docker-with-dind.tar.gz`. Zawiera ona plik Compose z przypiętego submodułu, skrypt `compose`, Dockerfile i konfigurację; `.env.example` wskazuje obraz tej wersji. W katalogu z rozpakowaną paczką skopiuj `.env.example` do `.env`, przygotuj `.ssh/authorized_keys` i wykonaj `./compose up -d`. Archiwum nie wymaga klonowania submodułu.
-
-Aby utworzyć wydanie po weryfikacji zmian na `main`:
+The agent can reach that port at `dind:7778`, for example:
 
 ```bash
-git tag v1.0.0
-git push origin v1.0.0
+node -e 'const s=require("net").connect(7778,"dind",()=>s.write("*1\r\n$4\r\nPING\r\n")); s.on("data",b=>{console.log(b.toString());s.end()})'
 ```
 
-W kolejnych wydaniach wybierz nowy numer. Workflow wydania wymaga udanego testu i publikacji obrazu; używa wbudowanego `GITHUB_TOKEN` z uprawnieniami tylko dla odpowiednich zadań.
+Inner container ports are published in the DinD container's network namespace, not directly on the agent or host. The outer Compose file maps host `127.0.0.1:${DIND_SERVICE_PORT:-7778}` to port `7778` in DinD. Therefore Redis is available on host loopback at `127.0.0.1:7778` by default. The inner port mapping must listen on `0.0.0.0` in DinD, as above. Other ports need additional outer Compose mappings; `docker run -p` inside the agent does not by itself publish them on the host. Remove the outer mapping if host access is not needed.
+
+Inner bind mounts are resolved by the DinD daemon, not by the client. Use paths under `/workspaces`, which has the same location in both containers. For example, after creating `/workspaces/data`, `docker run --rm -v /workspaces/data:/data alpine ls /data` sees that directory. Other paths in the agent are not automatically available to the daemon. A `docker build` context is sent to the daemon by the client.
+
+For an MCP server using stdio, configure the MCP client to launch `docker run --rm -i ...`. For an HTTP MCP server, publish an inner port and configure the client with `http://dind:PORT`. The image, arguments and authentication depend on the server. Services on the same inner Compose network can also reach each other by service name.
+
+Clean up the example with `docker compose down` in `/workspaces/redis-demo`.
+
+## Data and cleanup
+
+Outer Compose named volumes retain `/workspaces`, DinD data and SSH host keys across `docker compose down` and container recreation. This makes `/workspaces` persistent, unlike the ephemeral workspace in the upstream project. Inner containers, images, build caches and volumes consume host disk space. Agent CLI configuration and authentication elsewhere in the agent filesystem remain ephemeral when that container is recreated.
+
+`docker compose down -v` **deletes** the project's volumes, including the workspace, DinD data and SSH host keys. Back up anything needed first. Nested containers share the host kernel and resources; DinD can also be slower than using a single daemon directly.
+
+## Development and upstream dependency
+
+Clone with the submodule to develop or build locally:
+
+```bash
+git clone --recurse-submodules https://github.com/sigmalko/agents-in-docker-with-dind.git
+cd agents-in-docker-with-dind
+cp .env.example .env
+mkdir -p .ssh
+# Copy an SSH public key to .ssh/authorized_keys and edit .env.
+./compose up -d --build
+```
+
+If the repository was cloned without submodules, run `git submodule update --init --recursive`. The `./compose` wrapper combines `upstream/docker-compose.yml` with `compose.dind.yml`, resolving `.env` and relative paths from this repository. For example, use `./compose logs dind`, `./compose restart` or `./compose down`.
+
+`upstream/` is a [Git submodule](https://git-scm.com/docs/gitsubmodules) pinned to a specific commit. This reuses the upstream Compose file without maintaining a duplicate in the repository. `IMAGE` selects the base image during a local build and defaults to the SHA tag matching that upstream commit. `DIND_IMAGE` selects the resulting or published agent image. To update upstream, run `git submodule update --remote upstream`, review the change and update the base image tag in `.env.example`, `Dockerfile` and `compose.dind.yml` after checking compatibility. In particular, verify the `agent` service, UID/GID 1000, `/workspaces`, SSH configuration, and DinD socket group 2375. A submodule or README link alone does not guarantee an entry in GitHub's [dependency graph](https://docs.github.com/en/code-security/concepts/supply-chain-security/dependency-graph).
+
+## Images, tests and releases
+
+[GitHub Actions](.github/workflows/build-release.yml) runs real SSH and DinD integration tests for pull requests, pushes to `main` and version tags. It verifies Docker, Compose, Redis, networking, bind mounts and separation of the host and inner container lists, including the standalone release configuration. Functional tests run on AMD64; ARM64 images are built using emulation.
+
+A successful push to `main` publishes `ghcr.io/sigmalko/agents-in-docker-with-dind:latest` and a `sha-...` image tag for `linux/amd64` and `linux/arm64`. A successful push of a tag in the form `vMAJOR.MINOR.PATCH` pointing to a commit on `main` publishes the matching image tag without `v` and creates a GitHub Release with only `docker-compose.yml` and `env.example`. The generated Compose file contains the pinned upstream configuration and uses the published image; the template selects the release's image version. The release description contains installation instructions.
+
+To create a new release after verifying `main`:
+
+```bash
+git tag v1.0.1
+git push origin v1.0.1
+```
+
+Choose an unused version for subsequent releases. The release job runs only after tests and image publication succeed. Jobs use the built-in `GITHUB_TOKEN` with the permissions each job needs.
+
+For additional background, see [Docker Engine security](https://docs.docker.com/engine/security/) and the [official Docker image](https://hub.docker.com/_/docker).

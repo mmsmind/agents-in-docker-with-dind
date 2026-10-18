@@ -12,4 +12,9 @@ COPY --from=docker-cli /usr/local/libexec/docker/cli-plugins/ /usr/local/libexec
 # the same numeric GID, even though the two containers have separate users.
 RUN if ! getent group 2375 >/dev/null; then groupadd -g 2375 dind; fi \
     && usermod -aG "$(getent group 2375 | cut -d: -f1)" agent \
-    && ln -s /var/run/dind/docker.sock /var/run/docker.sock
+    && ln -s /var/run/dind/docker.sock /var/run/docker.sock \
+    && install -d -o agent -g agent -m 0700 /home/agent/.codex /home/agent/.claude
+
+# Both agent CLIs load these user-level instructions across workspaces.
+COPY --chown=agent:agent AGENTS.md /home/agent/.codex/AGENTS.md
+COPY --chown=agent:agent AGENTS.md /home/agent/.claude/CLAUDE.md

@@ -34,6 +34,14 @@ jobs:
           git merge-base --is-ancestor HEAD FETCH_HEAD
       - name: Test DinD and agent over SSH
         run: tests/smoke.sh
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - name: Test standalone release configuration
+        run: |
+          python -m pip install PyYAML==6.0.3
+          python scripts/export-release-compose.py "$RUNNER_TEMP/docker-compose.yml"
+          DIND_SMOKE_RELEASE_FILE="$RUNNER_TEMP/docker-compose.yml" tests/smoke.sh
 
   publish:
     needs: test
@@ -91,22 +99,20 @@ jobs:
         with:
           submodules: true
           persist-credentials: false
-      - name: Package pinned configuration and create release
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - name: Export standalone configuration and create release
         env:
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          bundle="$RUNNER_TEMP/agents-in-docker-with-dind"
-          mkdir -p "$bundle/upstream"
-          cp compose compose.dind.yml Dockerfile .dockerignore .env.example "$bundle/"
-          cp upstream/docker-compose.yml "$bundle/upstream/"
+          python -m pip install PyYAML==6.0.3
+          python scripts/export-release-compose.py "$RUNNER_TEMP/docker-compose.yml"
           image="ghcr.io/${REPOSITORY,,}:${RELEASE_TAG#v}"
-          sed -i "s|^DIND_IMAGE=.*|DIND_IMAGE=$image|" "$bundle/.env.example"
-          tar -C "$RUNNER_TEMP" -czf "$RUNNER_TEMP/agents-in-docker-with-dind.tar.gz" agents-in-docker-with-dind
-          cat > "$RUNNER_TEMP/notes.md" <<'NOTES'
-          Pobierz `agents-in-docker-with-dind.tar.gz`, rozpakuj i skopiuj `.env.example` do `.env`. Dodaj publiczny klucz SSH jako `.ssh/authorized_keys`, uzupełnij `.env` i uruchom `./compose up -d`. Paczka zawiera przypięty plik Compose projektu bazowego i wskazuje obraz tej wersji w GHCR. Szczegóły oraz ostrzeżenia dotyczące DinD znajdują się w README repozytorium.
-          NOTES
-          gh release create "$RELEASE_TAG" "$RUNNER_TEMP/agents-in-docker-with-dind.tar.gz" \
+          sed -e '/^IMAGE=/d' -e "s|^DIND_IMAGE=.*|DIND_IMAGE=$image|" .env.example > "$RUNNER_TEMP/env.example"
+          sed "s/RELEASE_TAG/$RELEASE_TAG/g" .github/release-notes.md > "$RUNNER_TEMP/notes.md"
+          gh release create "$RELEASE_TAG" "$RUNNER_TEMP/docker-compose.yml" "$RUNNER_TEMP/env.example" \
             --repo "$REPOSITORY" --title "$RELEASE_TAG" --notes-file "$RUNNER_TEMP/notes.md" --generate-notes
