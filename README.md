@@ -30,7 +30,7 @@ mkdir -p .ssh
 # Skopiuj publiczny klucz SSH z komputera klienta do .ssh/authorized_keys.
 chmod 600 .ssh/authorized_keys
 # Uzupełnij .env, w szczególności GH_TOKEN i AGENT_REPOSITORY.
-./compose up -d --build
+./compose up -d
 ./compose ps
 ```
 
@@ -42,7 +42,9 @@ ssh -i ~/.ssh/agents-in-docker -p 2222 agent@ADRES_HOSTA
 
 `SSH_PORT` i `SERVICE_PORT` domyślnie wystawiają porty `2222` i `7777` na wszystkich interfejsach hosta, jak w repozytorium bazowym. Skonfiguruj firewall i dostęp do SSH stosownie do potrzeb. `.env` nie jest wersjonowany; nie umieszczaj w repozytorium tokenów ani kluczy prywatnych. Dalsze informacje o agentach i zmiennych środowiskowych znajdują się w [README repozytorium bazowego](https://github.com/sigmalko/agents-in-docker#readme).
 
-`./compose` przekazuje argumenty do hostowego Docker Compose, łącząc przypięty plik bazowy z `compose.dind.yml` i ustawiając katalog projektu tak, by `.env` i ścieżka do kluczy były rozwiązywane w tym repozytorium. Przykłady: `./compose logs dind`, `./compose restart`, `./compose down`. `IMAGE` wybiera obraz bazowy agenta; domyślne `latest` może się zmienić. Po zmianie obrazu użyj `./compose build --pull` i `./compose up -d`.
+`./compose` przekazuje argumenty do hostowego Docker Compose, łącząc przypięty plik bazowy z `compose.dind.yml` i ustawiając katalog projektu tak, by `.env` i ścieżka do kluczy były rozwiązywane w tym repozytorium. Przykłady: `./compose logs dind`, `./compose restart`, `./compose down`. `DIND_IMAGE` wybiera publikowany obraz agenta z Docker CLI (domyślnie `latest`); `IMAGE` wybiera obraz bazowy wyłącznie przy lokalnej budowie. Aby zbudować lokalnie, użyj `./compose up -d --build`; aby pobrać nowszy opublikowany obraz, `./compose pull` i `./compose up -d`.
+
+GHCR może początkowo oznaczyć nowy pakiet jako prywatny. W takim przypadku administrator może zmienić widoczność pakietu w jego ustawieniach lub użytkownik może zalogować się do GHCR tokenem z uprawnieniem `read:packages` i dostępem do pakietu. Alternatywnie obraz można zbudować lokalnie poleceniem powyżej.
 
 ## Weryfikacja i przykład Redis
 
@@ -79,10 +81,25 @@ Wolumeny hostowego Compose przechowują `/workspaces`, dane demona `dind` i kluc
 
 ## Zależność od agents-in-docker
 
-`upstream/` to [submoduł Git](https://git-scm.com/docs/gitsubmodules), przypięty do konkretnego commitu repozytorium bazowego. Dzięki temu plik Compose upstream jest używany bez kopiowania i aktualizowany świadomie, a GitHub pokazuje link do repozytorium oraz konkretną wersję. Obraz bazowy jest odrębną zależnością: `IMAGE` domyślnie wskazuje ruchomy tag `latest`, więc przypięty submoduł nie przypina obrazu. Aby powtarzalnie wdrażać kompatybilny obraz, ustaw `IMAGE` na konkretny tag lub digest upstream.
+`upstream/` to [submoduł Git](https://git-scm.com/docs/gitsubmodules), przypięty do konkretnego commitu repozytorium bazowego. Dzięki temu plik Compose upstream jest używany bez kopiowania i aktualizowany świadomie, a GitHub pokazuje link do repozytorium oraz konkretną wersję. Obraz bazowy jest odrębną zależnością: domyślne `IMAGE` wskazuje tag odpowiadający temu samemu commitowi upstream. Po aktualizacji submodułu należy świadomie sprawdzić i zaktualizować również ten tag w `.env.example`, Dockerfile i `compose.dind.yml`. Wdrożenia mogą przypiąć opublikowany `DIND_IMAGE` do konkretnej wersji lub digestu.
 
 Aby zaktualizować zależność konfiguracji, wykonaj `git submodule update --remote upstream`, przejrzyj zmianę commitu, sprawdź zgodność z wybranym obrazem i uruchom środowisko ponownie; następnie zatwierdź nowy wskaźnik submodułu. `compose.dind.yml` nakłada tylko zmiany potrzebne dla DinD. Przy aktualizacjach sprawdź zwłaszcza nazwę usługi `agent`, UID/GID konta `agent` (1000), ścieżkę `/workspaces`, ustawienia SSH oraz zgodność GID socketu `2375` z obrazem `docker:29-dind`. Wykres zależności GitHub dotyczy obsługiwanych manifestów i zgłoszeń przez API; sam submoduł lub wpis w README nie gwarantuje pojawienia się w dependency graph ([dokumentacja GitHub](https://docs.github.com/en/code-security/concepts/supply-chain-security/dependency-graph)).
 
 ## Ograniczenia
 
 DinD wymaga zasobów na drugi demon i jego obrazy, może działać wolniej oraz wymaga ostrożności przy portach, uprawnieniach i bind mountach. Usługi współdzielą jądro hosta; host ma dostęp do procesów, danych i sieci, a uprzywilejowany DinD nie nadaje się do uruchamiania niezaufanego kodu jako zabezpieczenie hosta. W przypadku niezaufanych zadań rozważ osobne VM lub inne silniejsze granice izolacji. Więcej: [Docker Engine security](https://docs.docker.com/engine/security/) i [oficjalny obraz Docker](https://hub.docker.com/_/docker).
+
+## GitHub Actions i wydania
+
+Workflow [.github/workflows/build-release.yml](.github/workflows/build-release.yml) testuje środowisko na pull requestach, pushach na `main` i tagach `v*`. Test uruchamia rzeczywisty DinD, sprawdza SSH, Compose, Redis, bind mount i rozdzielenie list kontenerów. Po teście push na `main` publikuje obraz `ghcr.io/sigmalko/agents-in-docker-with-dind:latest` i tag commitu `sha-...` dla `linux/amd64` i `linux/arm64`. Test funkcjonalny wykonywany jest na runnerze amd64; arm64 jest budowane przez emulację.
+
+Push taga wydania `vMAJOR.MINOR.PATCH` wskazującego commit na `main` publikuje obraz z tagiem bez `v` i tworzy GitHub Release z paczką `agents-in-docker-with-dind.tar.gz`. Zawiera ona plik Compose z przypiętego submodułu, skrypt `compose`, Dockerfile i konfigurację; `.env.example` wskazuje obraz tej wersji. W katalogu z rozpakowaną paczką skopiuj `.env.example` do `.env`, przygotuj `.ssh/authorized_keys` i wykonaj `./compose up -d`. Archiwum nie wymaga klonowania submodułu.
+
+Aby utworzyć wydanie po weryfikacji zmian na `main`:
+
+```bash
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+W kolejnych wydaniach wybierz nowy numer. Workflow wydania wymaga udanego testu i publikacji obrazu; używa wbudowanego `GITHUB_TOKEN` z uprawnieniami tylko dla odpowiednich zadań.

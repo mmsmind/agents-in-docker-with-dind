@@ -1,0 +1,5 @@
+services:
+  agent:
+    ports: !override
+      - "127.0.0.1:${SSH_PORT:-38222}:22"
+      - "127.0.0.1:${SERVICE_PORT:-38777}:7777"

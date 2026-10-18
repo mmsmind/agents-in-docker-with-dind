@@ -1,4 +1,4 @@
-ARG AGENT_BASE_IMAGE=ghcr.io/sigmalko/agents-in-docker:latest
+ARG AGENT_BASE_IMAGE=ghcr.io/sigmalko/agents-in-docker:sha-8a5414950a08a3edb1702bf29455a6c6fec3f846
 FROM docker:29-cli AS docker-cli
 FROM ${AGENT_BASE_IMAGE}
 

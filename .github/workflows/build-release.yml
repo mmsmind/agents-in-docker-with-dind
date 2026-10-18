@@ -1,0 +1,112 @@
+name: Test, publish image and release
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dind-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          submodules: true
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check release tag is on main
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          [[ "$REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor HEAD FETCH_HEAD
+      - name: Test DinD and agent over SSH
+        run: tests/smoke.sh
+
+  publish:
+    needs: test
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Image name
+        id: image
+        env:
+          REPOSITORY: ${{ github.repository }}
+        run: echo "name=ghcr.io/${REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+      - name: Image tags
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6
+        with:
+          images: ${{ steps.image.outputs.name }}
+          flavor: latest=false
+          tags: |
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+            type=sha,format=long
+            type=semver,pattern={{version}}
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and publish amd64 and arm64 images
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  release:
+    needs: [test, publish]
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          submodules: true
+          persist-credentials: false
+      - name: Package pinned configuration and create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          bundle="$RUNNER_TEMP/agents-in-docker-with-dind"
+          mkdir -p "$bundle/upstream"
+          cp compose compose.dind.yml Dockerfile .dockerignore .env.example "$bundle/"
+          cp upstream/docker-compose.yml "$bundle/upstream/"
+          image="ghcr.io/${REPOSITORY,,}:${RELEASE_TAG#v}"
+          sed -i "s|^DIND_IMAGE=.*|DIND_IMAGE=$image|" "$bundle/.env.example"
+          tar -C "$RUNNER_TEMP" -czf "$RUNNER_TEMP/agents-in-docker-with-dind.tar.gz" agents-in-docker-with-dind
+          cat > "$RUNNER_TEMP/notes.md" <<'NOTES'
+          Pobierz `agents-in-docker-with-dind.tar.gz`, rozpakuj i skopiuj `.env.example` do `.env`. Dodaj publiczny klucz SSH jako `.ssh/authorized_keys`, uzupełnij `.env` i uruchom `./compose up -d`. Paczka zawiera przypięty plik Compose projektu bazowego i wskazuje obraz tej wersji w GHCR. Szczegóły oraz ostrzeżenia dotyczące DinD znajdują się w README repozytorium.
+          NOTES
+          gh release create "$RELEASE_TAG" "$RUNNER_TEMP/agents-in-docker-with-dind.tar.gz" \
+            --repo "$REPOSITORY" --title "$RELEASE_TAG" --notes-file "$RUNNER_TEMP/notes.md" --generate-notes
