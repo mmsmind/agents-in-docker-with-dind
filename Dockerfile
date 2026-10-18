@@ -1,0 +1,15 @@
+ARG AGENT_BASE_IMAGE=ghcr.io/sigmalko/agents-in-docker:latest
+FROM docker:29-cli AS docker-cli
+FROM ${AGENT_BASE_IMAGE}
+
+LABEL org.opencontainers.image.title="agents-in-docker-with-dind" \
+      org.opencontainers.image.source="https://github.com/sigmalko/agents-in-docker-with-dind"
+
+COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker
+COPY --from=docker-cli /usr/local/libexec/docker/cli-plugins/ /usr/local/libexec/docker/cli-plugins/
+
+# docker:29-dind has a docker group with GID 2375. The shared socket uses
+# the same numeric GID, even though the two containers have separate users.
+RUN if ! getent group 2375 >/dev/null; then groupadd -g 2375 dind; fi \
+    && usermod -aG "$(getent group 2375 | cut -d: -f1)" agent \
+    && ln -s /var/run/dind/docker.sock /var/run/docker.sock
