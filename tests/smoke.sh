@@ -42,20 +42,49 @@ ssh -o BatchMode=yes -o ConnectTimeout=2 -o StrictHostKeyChecking=yes \
     -p "$SSH_PORT" agent@127.0.0.1 'docker info >/dev/null && docker compose version'
 
 docker exec -u agent "$agent" sh -ec 'test -r "$HOME/.codex/AGENTS.md" && test -r "$HOME/.claude/CLAUDE.md" && cmp "$HOME/.codex/AGENTS.md" "$HOME/.claude/CLAUDE.md" && grep -q "in English" "$HOME/.codex/AGENTS.md"'
-docker exec -u agent "$agent" sh -ec 'mkdir -p /workspaces/smoke && printf shared-ok > /workspaces/smoke/probe'
+docker exec -u agent "$agent" sh -ec 'mkdir -p /workspaces/smoke && printf copied-ok > /workspaces/smoke/probe'
 docker exec -u agent "$agent" docker run -d --name nested-smoke \
-    -p 7778:6379 -v /workspaces/smoke:/probe:ro redis:7-alpine
+    -p 7778:6379 redis:7-alpine
 for _ in $(seq 1 30); do
     if [ "$(docker exec -u agent "$agent" docker exec nested-smoke redis-cli ping 2>/dev/null || true)" = PONG ]; then break; fi
     sleep 1
 done
 [ "$(docker exec -u agent "$agent" docker exec nested-smoke redis-cli ping)" = PONG ]
-[ "$(docker exec -u agent "$agent" docker exec nested-smoke cat /probe/probe)" = shared-ok ]
-docker exec -u agent "$agent" node -e 'const s=require("net").connect(7778,"dind",()=>s.write("*1\r\n$4\r\nPING\r\n"));s.on("data",b=>{if(b.toString().trim()!=="+PONG")process.exit(1);s.end()});s.on("error",()=>process.exit(1));setTimeout(()=>process.exit(1),5000).unref()'
+docker exec -u agent "$agent" docker cp /workspaces/smoke/probe nested-smoke:/probe
+[ "$(docker exec -u agent "$agent" docker exec nested-smoke cat /probe)" = copied-ok ]
+docker exec -u agent "$agent" sh -ec "printf 'FROM redis:7-alpine\\nCOPY probe /probe\\n' > /workspaces/smoke/Dockerfile"
+docker exec -u agent "$agent" docker build -t smoke-workspace /workspaces/smoke
+[ "$(docker exec -u agent "$agent" docker run --rm smoke-workspace cat /probe)" = copied-ok ]
+docker exec -u agent "$agent" node -e 'const s=require("net").connect(7778,"127.0.0.1",()=>s.write("*1\r\n$4\r\nPING\r\n"));s.on("data",b=>{if(b.toString().trim()!=="+PONG")process.exit(1);s.end()});s.on("error",()=>process.exit(1));setTimeout(()=>process.exit(1),5000).unref()'
+if docker inspect "$agent" --format '{{range .Mounts}}{{println .Destination}}{{end}}' | grep -Fxq /workspaces; then
+    echo 'Workspace has an unexpected mount' >&2; exit 1
+fi
+dind=$(compose ps -q dind)
+if docker inspect "$dind" --format '{{range .Mounts}}{{println .Type}}{{end}}' | grep -Fxq volume; then
+    echo 'DinD has an unexpected Docker volume' >&2; exit 1
+fi
 if docker ps -a --format '{{.Names}}' | grep -Fxq nested-smoke; then
     echo 'Nested container is visible to the host daemon' >&2; exit 1
 fi
 if docker exec -u agent "$agent" docker ps -a --format '{{.Names}}' | grep -Fxq "$agent"; then
     echo 'Host agent container is visible to the inner daemon' >&2; exit 1
 fi
-printf '%s\n' 'Smoke test passed: SSH, Docker, Compose, Redis, network, bind mount and daemon separation.'
+for key in title description url documentation source vendor; do
+    value=$(docker inspect "$agent" --format "{{ index .Config.Labels \"org.opencontainers.image.$key\" }}")
+    if [ -z "$value" ] || [ "$value" = '<no value>' ]; then
+        echo "Missing OCI image label: $key" >&2; exit 1
+    fi
+done
+compose restart dind
+for _ in $(seq 1 45); do
+    if docker exec -u agent "$agent" docker info >/dev/null 2>&1; then break; fi
+    sleep 1
+done
+docker exec -u agent "$agent" docker info >/dev/null
+if docker exec -u agent "$agent" docker ps -a --format '{{.Names}}' | grep -Fxq nested-smoke; then
+    echo 'Inner containers unexpectedly survived a DinD restart' >&2; exit 1
+fi
+docker exec -u agent "$agent" test -f /workspaces/smoke/probe
+compose up -d --force-recreate
+docker exec -u agent "$agent" test ! -e /workspaces/smoke/probe
+printf '%s\n' 'Smoke test passed: SSH, Docker, Compose, Redis, build, networking, labels, ephemeral storage and daemon separation.'

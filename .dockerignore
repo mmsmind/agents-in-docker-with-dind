@@ -1,3 +1,4 @@
 **
 !Dockerfile
 !AGENTS.md
+!docker-wrapper.sh

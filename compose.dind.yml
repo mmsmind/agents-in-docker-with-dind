@@ -5,39 +5,27 @@ services:
       context: .
       args:
         AGENT_BASE_IMAGE: ${IMAGE:-ghcr.io/sigmalko/agents-in-docker:sha-8a5414950a08a3edb1702bf29455a6c6fec3f846}
-    depends_on:
-      dind:
-        condition: service_healthy
-    volumes:
-      - dind-socket:/var/run/dind
-      - workspace:/workspaces
+    ports:
+      - "127.0.0.1:${DIND_SERVICE_PORT:-7778}:7778"
 
   dind:
     image: docker:29-dind
     privileged: true
     restart: unless-stopped
-    # Explicit dockerd invocation avoids the image's default TCP listener.
-    # The upstream agent account has UID/GID 1000; initialize an empty workspace.
-    command:
-      - sh
-      - -ec
-      - |
-        chown 1000:1000 /workspaces
-        exec dockerd-entrypoint.sh dockerd --host=unix:///dind/docker.sock --group=2375
-    volumes:
-      - dind-socket:/dind
-      - dind-data:/var/lib/docker
-      - workspace:/workspaces
-    ports:
-      - "127.0.0.1:${DIND_SERVICE_PORT:-7778}:7778"
+    network_mode: service:agent
+    depends_on:
+      agent:
+        condition: service_started
+        restart: true
+    environment:
+      DOCKER_TLS_CERTDIR: ""
+    command: ["dockerd", "--host=tcp://127.0.0.1:2375"]
+    # Override the image's declared /var/lib/docker volume with ephemeral storage.
+    tmpfs:
+      - /var/lib/docker
     healthcheck:
-      test: ["CMD", "docker", "-H", "unix:///dind/docker.sock", "info"]
+      test: ["CMD", "docker", "-H", "tcp://127.0.0.1:2375", "info"]
       interval: 3s
       timeout: 5s
       retries: 30
       start_period: 10s
-
-volumes:
-  dind-socket:
-  dind-data:
-  workspace:

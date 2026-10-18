@@ -22,3 +22,5 @@ ssh -i ~/.ssh/agents-in-docker -p 2222 agent@HOST_ADDRESS
 The environment template selects this release's published image. If GHCR denies an anonymous pull, log in with an authorized token or ask the package administrator to configure visibility. The SSH and agent service ports bind all host IPv4 interfaces by default; configure your firewall.
 
 DinD uses a privileged container and shares the host kernel. It separates the Docker daemons but is not a strong security boundary for untrusted code. See the [README](https://github.com/sigmalko/agents-in-docker-with-dind#readme) for security, persistence, networking and Redis examples.
+
+The agent workspace is ephemeral, and DinD images, containers and volumes are stored in memory-backed temporary storage and are lost when DinD stops. The only outer named volume stores SSH host keys. Back up data before upgrading from older releases or recreating containers.

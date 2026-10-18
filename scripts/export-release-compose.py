@@ -17,10 +17,10 @@ overlay = yaml.safe_load(overlay_path.read_text(encoding="utf-8"))
 for source, document in ((base_path, base), (overlay_path, overlay)):
     if any("env_file" in service for service in document.get("services", {}).values()):
         raise SystemExit(f"Service env_file is not supported in release export: {source}")
-if set(overlay) != {"services", "volumes"} or set(overlay["services"]) != {"agent", "dind"}:
+if set(overlay) != {"services"} or set(overlay["services"]) != {"agent", "dind"}:
     raise SystemExit("Unexpected DinD overlay structure; update the release exporter")
 agent_overlay = overlay["services"]["agent"]
-if set(agent_overlay) != {"image", "build", "depends_on", "volumes"}:
+if set(agent_overlay) != {"image", "build", "ports"}:
     raise SystemExit("Unexpected agent overlay fields; update the release exporter")
 if "agent" not in base["services"] or "dind" in base["services"]:
     raise SystemExit("Unexpected upstream services; update the release exporter")
@@ -30,13 +30,7 @@ if "depends_on" in agent:
     raise SystemExit("Upstream agent has dependencies; update the release exporter")
 agent.pop("build", None)  # Release users pull the published image.
 agent["image"] = agent_overlay["image"]
-agent["depends_on"] = agent_overlay["depends_on"]
-agent.setdefault("volumes", []).extend(agent_overlay["volumes"])
+agent.setdefault("ports", []).extend(agent_overlay["ports"])
 base["services"]["dind"] = overlay["services"]["dind"]
-for name, definition in overlay["volumes"].items():
-    volumes = base.setdefault("volumes", {})
-    if name in volumes and volumes[name] != definition:
-        raise SystemExit(f"Conflicting upstream volume: {name}")
-    volumes[name] = definition
 
 output.write_text(yaml.safe_dump(base, sort_keys=False), encoding="utf-8")

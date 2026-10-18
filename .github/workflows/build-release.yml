@@ -73,6 +73,13 @@ jobs:
             type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
             type=sha,format=long
             type=semver,pattern={{version}}
+          labels: |
+            org.opencontainers.image.title=agents-in-docker-with-dind
+            org.opencontainers.image.description=Run coding agents over SSH with their own Docker-in-Docker daemon.
+            org.opencontainers.image.url=https://github.com/sigmalko/agents-in-docker-with-dind
+            org.opencontainers.image.documentation=https://github.com/sigmalko/agents-in-docker-with-dind#readme
+            org.opencontainers.image.source=https://github.com/sigmalko/agents-in-docker-with-dind
+            org.opencontainers.image.vendor=sigmalko
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
         with:
           registry: ghcr.io

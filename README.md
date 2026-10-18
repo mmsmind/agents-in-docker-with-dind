@@ -10,17 +10,17 @@ Host Docker
 └── dind (a separate Docker daemon)
     └── its own images, networks, volumes and containers (e.g. Redis, MCP)
 
-agent:/var/run/docker.sock ── private Unix socket ──> dockerd in dind
-agent:/workspaces <──────── shared volume ────────> dind:/workspaces
+agent and dind share a network namespace
+agent Docker CLI ── loopback TCP 127.0.0.1:2375 ──> dockerd in dind
 ```
 
 The host Docker socket is not mounted. Host `docker ps` shows the outer agent and DinD containers, but not containers created by the inner daemon. `docker ps` inside the agent shows the inner containers, not the host's containers.
 
-**This separates Docker resources; it is not a strong security boundary.** DinD runs with `privileged`, shares the host kernel, and can potentially compromise the host. A host administrator can access its processes and data. Use trusted agents and code; use a dedicated VM or another stronger isolation boundary for untrusted workloads. Access to the DinD socket grants full control over that inner daemon. The daemon does not expose its API over TCP.
+**This separates Docker resources; it is not a strong security boundary.** DinD runs with `privileged`, shares the host kernel, and can potentially compromise the host. A host administrator can access its processes and data. Use trusted agents and code; use a dedicated VM or another stronger isolation boundary for untrusted workloads. The daemon listens without TLS only on loopback in the network namespace shared by the agent and DinD. Processes in that namespace can control the inner daemon; the API is not published on the host. Explicit Docker host or context settings override the default connection.
 
 ## Install from a release
 
-Requirements: Linux with Docker Engine, the Docker Compose v2 plugin and support for privileged containers; an SSH key pair; access to the GHCR image; and sufficient disk space for nested images. Restricted VPS containers and runtimes may not support the required cgroups, networking or filesystems.
+Requirements: Linux with Docker Engine, the Docker Compose v2 plugin and support for privileged containers; an SSH key pair; access to the GHCR image; and sufficient memory (and swap, if configured) for nested images. Restricted VPS containers and runtimes may not support the required cgroups, networking or filesystems.
 
 On the Docker host, download the two release assets:
 
@@ -45,6 +45,8 @@ docker compose pull
 docker compose up -d
 docker compose ps
 ```
+
+Wait until the `dind` service reports `healthy` before using Docker in the agent. Docker Engine may warn about the unencrypted loopback API; future Engine versions may require a configuration change.
 
 Connect from the client computer:
 
@@ -81,25 +83,27 @@ docker compose exec redis redis-cli ping  # PONG
 docker ps                                  # lists the inner Redis container
 ```
 
-The agent can reach that port at `dind:7778`, for example:
+The agent can reach that port at `127.0.0.1:7778`, for example:
 
 ```bash
-node -e 'const s=require("net").connect(7778,"dind",()=>s.write("*1\r\n$4\r\nPING\r\n")); s.on("data",b=>{console.log(b.toString());s.end()})'
+node -e 'const s=require("net").connect(7778,"127.0.0.1",()=>s.write("*1\r\n$4\r\nPING\r\n")); s.on("data",b=>{console.log(b.toString());s.end()})'
 ```
 
-Inner container ports are published in the DinD container's network namespace, not directly on the agent or host. The outer Compose file maps host `127.0.0.1:${DIND_SERVICE_PORT:-7778}` to port `7778` in DinD. Therefore Redis is available on host loopback at `127.0.0.1:7778` by default. The inner port mapping must listen on `0.0.0.0` in DinD, as above. Other ports need additional outer Compose mappings; `docker run -p` inside the agent does not by itself publish them on the host. Remove the outer mapping if host access is not needed.
+Inner container ports are published in the network namespace shared by the agent and DinD. The outer Compose file maps host `127.0.0.1:${DIND_SERVICE_PORT:-7778}` to port `7778` in that namespace. Therefore Redis is available on host loopback at `127.0.0.1:7778` by default. The inner port mapping must listen on `0.0.0.0`, as above. Other ports need additional outer Compose mappings; `docker run -p` inside the agent does not by itself publish them on the host. Remove the outer mapping if host access is not needed.
 
-Inner bind mounts are resolved by the DinD daemon, not by the client. Use paths under `/workspaces`, which has the same location in both containers. For example, after creating `/workspaces/data`, `docker run --rm -v /workspaces/data:/data alpine ls /data` sees that directory. Other paths in the agent are not automatically available to the daemon. A `docker build` context is sent to the daemon by the client.
+Inner bind mounts are resolved in the DinD container, and the agent workspace is not shared with it. A bind mount of `/workspaces` in an inner container therefore does not expose the agent workspace. A `docker build` context is sent to the daemon by the client. To transfer files into a running inner container, use `docker cp`; for persistent files during a DinD session, use an inner Docker volume and copy data into it.
 
-For an MCP server using stdio, configure the MCP client to launch `docker run --rm -i ...`. For an HTTP MCP server, publish an inner port and configure the client with `http://dind:PORT`. The image, arguments and authentication depend on the server. Services on the same inner Compose network can also reach each other by service name.
+For an MCP server using stdio, configure the MCP client to launch `docker run --rm -i ...`. For an HTTP MCP server, publish an inner port and configure the client with `http://127.0.0.1:PORT`. The image, arguments and authentication depend on the server. Services on the same inner Compose network can also reach each other by service name.
 
 Clean up the example with `docker compose down` in `/workspaces/redis-demo`.
 
 ## Data and cleanup
 
-Outer Compose named volumes retain `/workspaces`, DinD data and SSH host keys across `docker compose down` and container recreation. This makes `/workspaces` persistent, unlike the ephemeral workspace in the upstream project. Inner containers, images, build caches and volumes consume host disk space. Agent CLI configuration and authentication elsewhere in the agent filesystem remain ephemeral when that container is recreated.
+As in the upstream project, `/workspaces` lives in the agent container's writable layer and is lost when that container is recreated or removed. Back up your work outside the container before recreating it. The only outer named volume stores SSH host keys; `docker compose down -v` deletes those keys.
 
-`docker compose down -v` **deletes** the project's volumes, including the workspace, DinD data and SSH host keys. Back up anything needed first. Nested containers share the host kernel and resources; DinD can also be slower than using a single daemon directly.
+DinD uses a temporary filesystem for `/var/lib/docker`, so its images, containers, build cache and inner volumes are lost whenever the DinD container stops, including during a restart. This storage consumes memory and potentially swap; large builds can exhaust available resources. Agent CLI configuration and authentication in the agent container also disappear when it is recreated.
+
+Older versions of this project used named `workspace` and `dind-data` volumes. Upgrading and recreating the services leaves those old volumes on the host, but the new configuration no longer mounts them. Back up or migrate any needed data before upgrading, and remove old volumes only after verifying their contents are no longer needed.
 
 ## Development and upstream dependency
 
@@ -116,13 +120,15 @@ mkdir -p .ssh
 
 If the repository was cloned without submodules, run `git submodule update --init --recursive`. The `./compose` wrapper combines `upstream/docker-compose.yml` with `compose.dind.yml`, resolving `.env` and relative paths from this repository. For example, use `./compose logs dind`, `./compose restart` or `./compose down`.
 
-`upstream/` is a [Git submodule](https://git-scm.com/docs/gitsubmodules) pinned to a specific commit. This reuses the upstream Compose file without maintaining a duplicate in the repository. `IMAGE` selects the base image during a local build and defaults to the SHA tag matching that upstream commit. `DIND_IMAGE` selects the resulting or published agent image. To update upstream, run `git submodule update --remote upstream`, review the change and update the base image tag in `.env.example`, `Dockerfile` and `compose.dind.yml` after checking compatibility. In particular, verify the `agent` service, UID/GID 1000, `/workspaces`, SSH configuration, and DinD socket group 2375. A submodule or README link alone does not guarantee an entry in GitHub's [dependency graph](https://docs.github.com/en/code-security/concepts/supply-chain-security/dependency-graph).
+`upstream/` is a [Git submodule](https://git-scm.com/docs/gitsubmodules) pinned to a specific commit. This reuses the upstream Compose file without maintaining a duplicate in the repository. `IMAGE` selects the base image during a local build and defaults to the SHA tag matching that upstream commit. `DIND_IMAGE` selects the resulting or published agent image. To update upstream, run `git submodule update --remote upstream`, review the change and update the base image tag in `.env.example`, `Dockerfile` and `compose.dind.yml` after checking compatibility. In particular, verify the `agent` service, `/workspaces`, SSH configuration, and the shared-network DinD connection. A submodule or README link alone does not guarantee an entry in GitHub's [dependency graph](https://docs.github.com/en/code-security/concepts/supply-chain-security/dependency-graph).
 
 ## Images, tests and releases
 
-[GitHub Actions](.github/workflows/build-release.yml) runs real SSH and DinD integration tests for pull requests, pushes to `main` and version tags. It verifies Docker, Compose, Redis, networking, bind mounts and separation of the host and inner container lists, including the standalone release configuration. Functional tests run on AMD64; ARM64 images are built using emulation.
+[GitHub Actions](.github/workflows/build-release.yml) runs real SSH and DinD integration tests for pull requests, pushes to `main` and version tags. It verifies Docker, Compose, Redis, networking, file transfer, mounts and separation of the host and inner container lists, including the standalone release configuration. Functional tests run on AMD64; ARM64 images are built using emulation.
 
 A successful push to `main` publishes `ghcr.io/sigmalko/agents-in-docker-with-dind:latest` and a `sha-...` image tag for `linux/amd64` and `linux/arm64`. A successful push of a tag in the form `vMAJOR.MINOR.PATCH` pointing to a commit on `main` publishes the matching image tag without `v` and creates a GitHub Release with only `docker-compose.yml` and `env.example`. The generated Compose file contains the pinned upstream configuration and uses the published image; the template selects the release's image version. The release description contains installation instructions.
+
+The image contains OCI labels for this project and its base image. Published images also receive version, revision and creation-time labels from GitHub Actions. Local builds use `dev` as the version and leave revision and creation time empty unless supplied with the `IMAGE_VERSION`, `IMAGE_REVISION` and `IMAGE_CREATED` build arguments.
 
 To create a new release after verifying `main`:
 
