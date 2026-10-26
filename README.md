@@ -4,6 +4,8 @@ Run coding agents over SSH with their own Docker daemon. This project extends [a
 
 ## Architecture and security
 
+The agent image includes Python 3 (`python3`), Vim (`vim` and `vi`), Nano (`nano`), and ripgrep (`rg`) for editing and searching workspace files.
+
 ```text
 Host Docker
 ├── agent (SSH, Codex, Claude, Docker CLI and Compose)
