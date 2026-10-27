@@ -1,0 +1,12 @@
+# Packages absent from Debian 13; other document libraries come from apt.
+pdfplumber==0.11.10
+python-pptx==1.0.2
+# Pin pip-only transitive dependencies as well; lxml/typing-extensions use apt.
+pdfminer.six==20260107
+Pillow==13.0.0
+pypdfium2==5.14.0
+XlsxWriter==3.3.0
+charset-normalizer==3.5.2
+cryptography==50.0.2
+cffi==2.1.1
+pycparser==3.12

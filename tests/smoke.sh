@@ -28,6 +28,12 @@ else
 fi
 
 agent=$COMPOSE_PROJECT_NAME
+docker exec -i -u agent "$agent" bash < tests/documents.sh
+image_size=$(docker image inspect "$DIND_IMAGE" --format '{{.Size}}')
+printf 'Agent image size: %s bytes\n' "$image_size"
+if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+    printf 'Agent image size (uncompressed): %s bytes\n' "$image_size" >> "$GITHUB_STEP_SUMMARY"
+fi
 for _ in $(seq 1 30); do
     if ssh -o BatchMode=yes -o ConnectTimeout=2 -o StrictHostKeyChecking=no \
         -o UserKnownHostsFile="$test_dir/known_hosts" -i "$test_dir/key" \
@@ -87,4 +93,4 @@ fi
 docker exec -u agent "$agent" test -f /workspaces/smoke/probe
 compose up -d --force-recreate
 docker exec -u agent "$agent" test ! -e /workspaces/smoke/probe
-printf '%s\n' 'Smoke test passed: SSH, Docker, Compose, Redis, build, networking, labels, ephemeral storage and daemon separation.'
+printf '%s\n' 'Smoke test passed: documents, OCR, images, SSH, Docker, Compose, Redis, build, networking, labels, ephemeral storage and daemon separation.'

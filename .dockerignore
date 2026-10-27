@@ -2,3 +2,9 @@
 !Dockerfile
 !AGENTS.md
 !docker-wrapper.sh
+!scripts/
+!scripts/doc-tools.py
+!scripts/doc-to-text
+!scripts/doc-extract-images
+!scripts/pdf-to-png
+!requirements-docs.txt
