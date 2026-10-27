@@ -126,6 +126,61 @@ If the repository was cloned without submodules, run `git submodule update --ini
 
 ## Images, tests and releases
 
+### Reading business documents
+
+The image includes Poppler (`pdftotext`, `pdftoppm`, `pdfimages`), Pandoc,
+Tesseract with English and Polish language data, ImageMagick, Inkscape, ZIP tools,
+DejaVu fonts, `jq`, and `file`. LibreOffice Writer and Core use Debian's `-nogui`
+packages for headless conversion; Calc, Impress, Java and the full desktop suite
+are not installed. Set `docker build --build-arg INSTALL_LIBREOFFICE=false .`
+to omit LibreOffice; the default is `true` for ready-to-use DOCX rendering.
+
+```bash
+doc-to-text manual.pdf /tmp/manual-text
+doc-to-text manual.docx /tmp/manual-docx  # Markdown plus extracted media
+doc-extract-images manual.docx /tmp/manual-images
+pdf-to-png manual.pdf 1 3 110 --outdir /tmp/manual-pages
+soffice --headless '-env:UserInstallation=file:///tmp/lo-profile' --convert-to pdf --outdir /tmp/manual-pdf manual.docx
+```
+
+Each helper supports `--help`. Outputs default to `/tmp/doc-out/<basename>`;
+use separate directories for unrelated files with the same basename. Sources
+are never modified, and output directories containing the source are rejected.
+PDF text preserves layout and falls back to English/Polish OCR separately for
+each page without text. DOCX headings, tables and media use Pandoc; XLSX exports
+cached cell values by sheet (formulas are not recalculated), and PPTX exports
+slide text and tables. HTML converts to Markdown. Embedded Office/PDF images
+become PNGs at most 1600 pixels per side; page renders retain the requested DPI
+(110 by default, 600 maximum). Complex layouts and OCR still need visual review.
+
+Python imports (`fitz`, `pypdf`, `pdfplumber`, `docx`, `openpyxl`, `pptx`, `PIL`,
+`lxml`, `bs4`) work with `python3 -I` as `agent`, with no activation or installation.
+Available Debian packages are reused; the two missing libraries are pinned in
+`requirements-docs.txt` and installed in `/opt/docs-venv` with system-site-packages.
+The pinned global `mammoth@1.13.0` CLI provides an alternative DOCX-to-HTML path.
+Optional `pdfjs-dist` is omitted because Poppler and PyMuPDF cover PDF reading.
+Inkscape is heavier than `libwmf-bin`, but supports both EMF and WMF; `libwmf-bin`
+alone only covers WMF. The helper invokes Inkscape without a display server.
+
+`tests/documents.sh` generates all sample documents at runtime and verifies text,
+page-level OCR, images, EMF/WMF conversion and imports as `agent`. The full smoke
+test also prints the uncompressed image size into the GitHub workflow summary.
+
+Measured locally on Linux/AMD64 on 2026-10-27 (`docker image inspect`, decimal MB,
+uncompressed; registry downloads are smaller):
+
+| Build | Size | Change from the previous image |
+| --- | ---: | ---: |
+| Before document tooling | 2,625 MB | — |
+| Document tooling, without LibreOffice | 3,605 MB | +981 MB |
+| Document tooling, default LibreOffice enabled | 3,981 MB | +1,356 MB |
+
+Headless Writer adds about 376 MB over the document-only build. It is enabled
+because rendering DOCX to PDF lets agents inspect page layout and screenshots;
+text and embedded-image extraction still work when it is disabled. The cost is
+worthwhile for the default document-reading use case, while custom deployments
+can omit it. Sizes vary with architecture and Debian security updates.
+
 [GitHub Actions](.github/workflows/build-release.yml) runs real SSH and DinD integration tests for pull requests, pushes to `main` and version tags. It verifies Docker, Compose, Redis, networking, file transfer, mounts and separation of the host and inner container lists, including the standalone release configuration. Functional tests run on AMD64; ARM64 images are built using emulation.
 
 A successful push to `main` publishes `ghcr.io/sigmalko/agents-in-docker-with-dind:latest` and a `sha-...` image tag for `linux/amd64` and `linux/arm64`. A successful push of a tag in the form `vMAJOR.MINOR.PATCH` pointing to a commit on `main` publishes the matching image tag without `v` and creates a GitHub Release with only `docker-compose.yml` and `env.example`. The generated Compose file contains the pinned upstream configuration and uses the published image; the template selects the release's image version. The release description contains installation instructions.

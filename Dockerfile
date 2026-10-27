@@ -21,11 +21,31 @@ LABEL org.opencontainers.image.title="agents-in-docker-with-dind" \
 
 COPY --from=docker-cli /usr/local/bin/docker /usr/local/libexec/dind/docker
 COPY --from=docker-cli /usr/local/libexec/docker/cli-plugins/ /usr/local/libexec/docker/cli-plugins/
-COPY docker-wrapper.sh /usr/local/bin/docker
+COPY --chmod=755 docker-wrapper.sh /usr/local/bin/docker
 
+ARG INSTALL_LIBREOFFICE=true
 RUN apt-get update \
+    && case "$INSTALL_LIBREOFFICE" in true|false) ;; *) exit 2 ;; esac \
     && apt-get install -y --no-install-recommends python3 vim nano ripgrep \
+        poppler-utils pandoc tesseract-ocr tesseract-ocr-eng tesseract-ocr-pol \
+        unzip zip imagemagick inkscape fonts-dejavu-core jq file \
+        python3-pip python3-venv python3-fitz python3-pypdf python3-docx \
+        python3-openpyxl python3-pil python3-lxml python3-bs4 \
+        $(if [ "$INSTALL_LIBREOFFICE" = true ]; then echo libreoffice-writer-nogui libreoffice-core-nogui; fi) \
     && rm -rf /var/lib/apt/lists/*
+
+COPY requirements-docs.txt /opt/requirements-docs.txt
+# Reuse Debian libraries; pip supplies only packages absent from trixie.
+RUN python3 -m venv --system-site-packages /opt/docs-venv \
+    && /opt/docs-venv/bin/pip install --no-cache-dir -r /opt/requirements-docs.txt \
+    && npm install -g mammoth@1.13.0 \
+    && npm cache clean --force
+ENV PATH="/opt/docs-venv/bin:${PATH}"
+# SSH login shells reset PATH; select the same interpreter there as well.
+RUN printf '#!/bin/sh\nexec /opt/docs-venv/bin/python3 "$@"\n' > /usr/local/bin/python3 \
+    && chmod 755 /usr/local/bin/python3
+COPY scripts/doc-tools.py /usr/local/lib/doc-tools.py
+COPY --chmod=755 scripts/doc-to-text scripts/doc-extract-images scripts/pdf-to-png /usr/local/bin/
 
 RUN install -d -o agent -g agent -m 0700 /home/agent/.codex /home/agent/.claude
 

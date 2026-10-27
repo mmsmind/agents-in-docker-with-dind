@@ -1,0 +1,6 @@
+*.sh text eol=lf
+/compose text eol=lf
+/docker-wrapper.sh text eol=lf
+/scripts/doc-to-text text eol=lf
+/scripts/doc-extract-images text eol=lf
+/scripts/pdf-to-png text eol=lf
