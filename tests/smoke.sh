@@ -64,6 +64,7 @@ docker exec -u agent "$agent" sh -ec "printf 'FROM redis:7-alpine\\nCOPY probe /
 docker exec -u agent "$agent" docker build -t smoke-workspace /workspaces/smoke
 [ "$(docker exec -u agent "$agent" docker run --rm smoke-workspace cat /probe)" = copied-ok ]
 docker exec -u agent "$agent" node -e 'const s=require("net").connect(7778,"127.0.0.1",()=>s.write("*1\r\n$4\r\nPING\r\n"));s.on("data",b=>{if(b.toString().trim()!=="+PONG")process.exit(1);s.end()});s.on("error",()=>process.exit(1));setTimeout(()=>process.exit(1),5000).unref()'
+docker exec -i -u agent "$agent" bash < tests/browser.sh
 if docker inspect "$agent" --format '{{range .Mounts}}{{println .Destination}}{{end}}' | grep -Fxq /workspaces; then
     echo 'Workspace has an unexpected mount' >&2; exit 1
 fi
@@ -95,4 +96,4 @@ fi
 docker exec -u agent "$agent" test -f /workspaces/smoke/probe
 compose up -d --force-recreate
 docker exec -u agent "$agent" test ! -e /workspaces/smoke/probe
-printf '%s\n' 'Smoke test passed: documents, OCR, images, SSH, Docker, Compose, Redis, build, networking, labels, ephemeral storage and daemon separation.'
+printf '%s\n' 'Smoke test passed: documents, OCR, images, Playwright Chromium, SSH, Docker, Compose, Redis, build, networking, labels, ephemeral storage and daemon separation.'

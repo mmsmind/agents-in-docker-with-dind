@@ -189,6 +189,8 @@ as `agent` is enough to run headless browser tests. Browsers themselves are not
 preinstalled; Playwright downloads them into `~/.cache/ms-playwright`, which is
 lost when the container is recreated. Fonts, `xvfb` and headed mode are not
 covered; use `npx playwright install-deps` as root if you need the full set.
+`tests/browser.sh` installs `@playwright/test` and Chromium as `agent`, then
+tests a page served from a DinD container, including a screenshot and a PDF.
 Measured on 2026-10-28 like the table above, the default image grows from
 3,981 MB to 4,253 MB (+272 MB), mostly Mesa and LLVM pulled in by `libgbm1`.
 
