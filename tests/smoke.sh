@@ -29,6 +29,8 @@ fi
 
 agent=$COMPOSE_PROJECT_NAME
 docker exec -i -u agent "$agent" bash < tests/documents.sh
+# Shared libraries that Playwright's downloaded Chromium links against.
+docker exec -u agent "$agent" sh -ec 'for lib in libasound.so.2 libatk-1.0.so.0 libatk-bridge-2.0.so.0 libatspi.so.0 libcairo.so.2 libcups.so.2 libdbus-1.so.3 libdrm.so.2 libgbm.so.1 libglib-2.0.so.0 libnspr4.so libnss3.so libpango-1.0.so.0 libX11.so.6 libxcb.so.1 libXcomposite.so.1 libXdamage.so.1 libXext.so.6 libXfixes.so.3 libxkbcommon.so.0 libXrandr.so.2; do /sbin/ldconfig -p | grep -Fq "$lib " || { echo "Missing Chromium library: $lib" >&2; exit 1; }; done'
 image_size=$(docker image inspect "$DIND_IMAGE" --format '{{.Size}}')
 printf 'Agent image size: %s bytes\n' "$image_size"
 if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
